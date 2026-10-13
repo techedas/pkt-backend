@@ -1,0 +1,860 @@
+// PKT - Product Knowledge Test Platform
+// PostgreSQL schema managed by Prisma.
+//
+// Conventions
+// - Primary keys are UUIDs.
+// - Master data (users, products, topics, questions, assessments) is soft-deleted via `deletedAt`.
+// - Attempt data is immutable history: every attempt stores a full snapshot of its questions,
+//   options, correct answers, marks and assessment configuration, so later edits to the
+//   question bank or assessment never change historical results.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TopicStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum QuestionType {
+  MCQ_SINGLE
+  MCQ_MULTIPLE
+  TRUE_FALSE
+  TEXT
+  SCENARIO
+  AUDIO
+  VIDEO
+}
+
+enum DifficultyLevel {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum QuestionStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+}
+
+enum AssessmentStatus {
+  DRAFT
+  PUBLISHED
+  ACTIVE
+  EXPIRED
+  INACTIVE
+}
+
+enum AssessmentType {
+  MCQ
+}
+
+enum SelectionMode {
+  MANUAL
+  DYNAMIC
+}
+
+enum ReattemptPolicy {
+  ALWAYS
+  ONLY_IF_FAILED
+}
+
+enum AssignmentType {
+  USER
+  TEAM
+  DEPARTMENT
+  ROLE
+  PRODUCT_GROUP
+  LOCATION
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  CANCELLED
+  INACTIVE
+}
+
+enum AttemptStatus {
+  STARTED
+  IN_PROGRESS
+  SUBMITTED
+  AUTO_SUBMITTED
+  EXPIRED
+}
+
+enum AttemptResult {
+  PASS
+  FAIL
+}
+
+enum CertificateStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum NotificationType {
+  ASSESSMENT_ASSIGNED
+  ASSESSMENT_DUE_SOON
+  ASSESSMENT_EXPIRED
+  ASSESSMENT_COMPLETED
+  ASSESSMENT_PASSED
+  ASSESSMENT_FAILED
+  REATTEMPT_AVAILABLE
+  CERTIFICATION_EXPIRING
+  GENERAL
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+enum AttachmentType {
+  IMAGE
+  AUDIO
+  VIDEO
+  DOCUMENT
+  LINK
+}
+
+enum SettingValueType {
+  NUMBER
+  BOOLEAN
+  STRING
+}
+
+// ---------------------------------------------------------------------------
+// Access control
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique @db.VarChar(50)
+  name        String           @db.VarChar(100)
+  description String?
+  isSystem    Boolean          @default(false) @map("is_system")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  permissions RolePermission[]
+  users       User[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique @db.VarChar(100)
+  module      String           @db.VarChar(50)
+  description String?
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+// ---------------------------------------------------------------------------
+// Users & authentication
+// ---------------------------------------------------------------------------
+
+model User {
+  id                 String     @id @default(uuid()) @db.Uuid
+  employeeId         String     @unique @map("employee_id") @db.VarChar(50)
+  firstName          String     @map("first_name") @db.VarChar(100)
+  lastName           String     @map("last_name") @db.VarChar(100)
+  email              String     @unique @db.VarChar(255)
+  mobile             String?    @db.VarChar(20)
+  department         String?    @db.VarChar(100)
+  designation        String?    @db.VarChar(100)
+  team               String?    @db.VarChar(100)
+  productGroup       String?    @map("product_group") @db.VarChar(100)
+  location           String?    @db.VarChar(100)
+  managerId          String?    @map("manager_id") @db.Uuid
+  roleId             String     @map("role_id") @db.Uuid
+  status             UserStatus @default(ACTIVE)
+  passwordHash       String     @map("password_hash")
+  mustChangePassword Boolean    @default(false) @map("must_change_password")
+  authProvider       String     @default("LOCAL") @map("auth_provider") @db.VarChar(30)
+  externalId         String?    @map("external_id") @db.VarChar(255)
+  lastLogin          DateTime?  @map("last_login")
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
+  deletedAt          DateTime?  @map("deleted_at")
+
+  role                Role                   @relation(fields: [roleId], references: [id])
+  manager             User?                  @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports             User[]                 @relation("UserManager")
+  managedProducts     UserProduct[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  attempts            AssessmentAttempt[]
+  certificates        Certificate[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  createdProducts     Product[]              @relation("ProductCreatedBy")
+  createdQuestions    Question[]             @relation("QuestionCreatedBy")
+  createdAssessments  Assessment[]           @relation("AssessmentCreatedBy")
+  assignmentsMade     AssessmentAssignment[] @relation("AssignmentAssignedBy")
+
+  @@index([managerId])
+  @@index([roleId])
+  @@index([department])
+  @@index([team])
+  @@index([location])
+  @@index([status])
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash") @db.VarChar(128)
+  expiresAt  DateTime  @map("expires_at")
+  lastUsedAt DateTime  @default(now()) @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  userAgent  String?   @map("user_agent") @db.VarChar(500)
+  ipAddress  String?   @map("ip_address") @db.VarChar(64)
+  createdAt  DateTime  @default(now()) @map("created_at")
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.VarChar(128)
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// Products a PRODUCT_ADMIN is allowed to manage.
+model UserProduct {
+  userId    String   @map("user_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([userId, productId])
+  @@index([productId])
+  @@map("user_products")
+}
+
+// ---------------------------------------------------------------------------
+// Products, topics & question bank
+// ---------------------------------------------------------------------------
+
+model Product {
+  id           String        @id @default(uuid()) @db.Uuid
+  productCode  String        @unique @map("product_code") @db.VarChar(30)
+  productName  String        @map("product_name") @db.VarChar(150)
+  description  String?
+  category     String?       @db.VarChar(100)
+  productOwner String?       @map("product_owner") @db.VarChar(150)
+  status       ProductStatus @default(ACTIVE)
+  createdById  String?       @map("created_by") @db.Uuid
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  deletedAt    DateTime?     @map("deleted_at")
+
+  createdBy    User?          @relation("ProductCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  topics       ProductTopic[]
+  questions    Question[]
+  assessments  Assessment[]
+  admins       UserProduct[]
+  certificates Certificate[]
+
+  @@index([status])
+  @@index([category])
+  @@map("products")
+}
+
+// Topics and subtopics share one table: a subtopic is a topic with a parent.
+model ProductTopic {
+  id          String      @id @default(uuid()) @db.Uuid
+  productId   String      @map("product_id") @db.Uuid
+  parentId    String?     @map("parent_id") @db.Uuid
+  name        String      @db.VarChar(150)
+  description String?
+  sequence    Int         @default(0)
+  status      TopicStatus @default(ACTIVE)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+  deletedAt   DateTime?   @map("deleted_at")
+
+  product           Product                  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  parent            ProductTopic?            @relation("TopicHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children          ProductTopic[]           @relation("TopicHierarchy")
+  questions         Question[]               @relation("QuestionTopic")
+  subTopicQuestions Question[]               @relation("QuestionSubTopic")
+  rules             AssessmentQuestionRule[] @relation("RuleTopic")
+  subTopicRules     AssessmentQuestionRule[] @relation("RuleSubTopic")
+  versionRules      AssessmentVersionRule[]  @relation("VersionRuleTopic")
+  versionSubRules   AssessmentVersionRule[]  @relation("VersionRuleSubTopic")
+
+  @@index([productId, parentId])
+  @@map("product_topics")
+}
+
+model Question {
+  id              String          @id @default(uuid()) @db.Uuid
+  questionNo      Int             @unique @default(autoincrement()) @map("question_no")
+  productId       String          @map("product_id") @db.Uuid
+  topicId         String          @map("topic_id") @db.Uuid
+  subTopicId      String?         @map("sub_topic_id") @db.Uuid
+  questionText    String          @map("question_text")
+  questionType    QuestionType    @default(MCQ_SINGLE) @map("question_type")
+  difficultyLevel DifficultyLevel @default(MEDIUM) @map("difficulty_level")
+  marks           Float           @default(1)
+  negativeMarks   Float           @default(0) @map("negative_marks")
+  explanation     String?
+  status          QuestionStatus  @default(DRAFT)
+  // Normalised hash of product + question text, used for duplicate detection.
+  contentHash     String          @map("content_hash") @db.VarChar(64)
+  version         Int             @default(1)
+  createdById     String?         @map("created_by") @db.Uuid
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+  deletedAt       DateTime?       @map("deleted_at")
+
+  product             Product                     @relation(fields: [productId], references: [id])
+  topic               ProductTopic                @relation("QuestionTopic", fields: [topicId], references: [id])
+  subTopic            ProductTopic?               @relation("QuestionSubTopic", fields: [subTopicId], references: [id])
+  createdBy           User?                       @relation("QuestionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  options             QuestionOption[]
+  attachments         QuestionAttachment[]
+  assessmentQuestions AssessmentQuestion[]
+  versionQuestions    AssessmentVersionQuestion[]
+
+  @@index([productId, status])
+  @@index([topicId])
+  @@index([subTopicId])
+  @@index([difficultyLevel])
+  @@index([contentHash])
+  @@index([createdById])
+  @@map("questions")
+}
+
+model QuestionOption {
+  id         String   @id @default(uuid()) @db.Uuid
+  questionId String   @map("question_id") @db.Uuid
+  optionCode String   @map("option_code") @db.VarChar(5)
+  optionText String   @map("option_text")
+  isCorrect  Boolean  @default(false) @map("is_correct")
+  sequence   Int
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, optionCode])
+  @@map("question_options")
+}
+
+// Media and reference material attached to a question (images, audio, video, documents, links).
+// Extension point for AUDIO / VIDEO / SCENARIO question types.
+model QuestionAttachment {
+  id             String         @id @default(uuid()) @db.Uuid
+  questionId     String         @map("question_id") @db.Uuid
+  attachmentType AttachmentType @map("attachment_type")
+  url            String         @db.VarChar(1000)
+  caption        String?        @db.VarChar(300)
+  sequence       Int            @default(0)
+  createdById    String?        @map("created_by") @db.Uuid
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  question       Question       @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("question_attachments")
+}
+
+// ---------------------------------------------------------------------------
+// Assessments
+// ---------------------------------------------------------------------------
+
+model Assessment {
+  id                        String           @id @default(uuid()) @db.Uuid
+  assessmentCode            String           @unique @map("assessment_code") @db.VarChar(50)
+  assessmentName            String           @map("assessment_name") @db.VarChar(200)
+  description               String?
+  instructions              String?
+  productId                 String           @map("product_id") @db.Uuid
+  assessmentType            AssessmentType   @default(MCQ) @map("assessment_type")
+  selectionMode             SelectionMode    @default(MANUAL) @map("selection_mode")
+  totalQuestions            Int              @map("total_questions")
+  totalMarks                Float            @default(0) @map("total_marks")
+  passingPercentage         Float            @map("passing_percentage")
+  durationMinutes           Int              @map("duration_minutes")
+  startDate                 DateTime?        @map("start_date")
+  endDate                   DateTime?        @map("end_date")
+  maxAttempts               Int              @default(1) @map("max_attempts")
+  reattemptPolicy           ReattemptPolicy  @default(ONLY_IF_FAILED) @map("reattempt_policy")
+  reattemptSameQuestions    Boolean          @default(false) @map("reattempt_same_questions")
+  randomizeQuestions        Boolean          @default(true) @map("randomize_questions")
+  randomizeOptions          Boolean          @default(true) @map("randomize_options")
+  allowPreviousQuestion     Boolean          @default(true) @map("allow_previous_question")
+  allowQuestionNavigation   Boolean          @default(true) @map("allow_question_navigation")
+  showResultImmediately     Boolean          @default(true) @map("show_result_immediately")
+  showCorrectAnswers        Boolean          @default(false) @map("show_correct_answers")
+  showExplanation           Boolean          @default(false) @map("show_explanation")
+  negativeMarkingEnabled    Boolean          @default(false) @map("negative_marking_enabled")
+  autoSubmitOnTimeout       Boolean          @default(true) @map("auto_submit_on_timeout")
+  certificationEnabled      Boolean          @default(false) @map("certification_enabled")
+  certificationValidityDays Int?             @map("certification_validity_days")
+  status                    AssessmentStatus @default(DRAFT)
+  version                   Int              @default(1)
+  publishedAt               DateTime?        @map("published_at")
+  createdById               String?          @map("created_by") @db.Uuid
+  createdAt                 DateTime         @default(now()) @map("created_at")
+  updatedAt                 DateTime         @updatedAt @map("updated_at")
+  deletedAt                 DateTime?        @map("deleted_at")
+
+  product                Product                            @relation(fields: [productId], references: [id])
+  createdBy              User?                              @relation("AssessmentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  questions              AssessmentQuestion[]
+  rules                  AssessmentQuestionRule[]
+  difficultyDistribution AssessmentDifficultyDistribution[]
+  versions               AssessmentVersion[]
+  assignments            AssessmentAssignment[]
+  attempts               AssessmentAttempt[]
+  certificates           Certificate[]
+
+  @@index([productId])
+  @@index([status])
+  @@map("assessments")
+}
+
+// Optional difficulty distribution for DYNAMIC selection (e.g. EASY 10 / MEDIUM 10 / HARD 5).
+model AssessmentDifficultyDistribution {
+  id              String          @id @default(uuid()) @db.Uuid
+  assessmentId    String          @map("assessment_id") @db.Uuid
+  difficultyLevel DifficultyLevel @map("difficulty_level")
+  questionCount   Int             @map("question_count")
+  assessment      Assessment      @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, difficultyLevel])
+  @@map("assessment_difficulty_distribution")
+}
+
+// Immutable copy of an assessment's configuration, created when it is published
+// and whenever a published assessment's operational fields change.
+// Every attempt points at the version it was started under.
+model AssessmentVersion {
+  id                        String          @id @default(uuid()) @db.Uuid
+  assessmentId              String          @map("assessment_id") @db.Uuid
+  versionNumber             Int             @map("version_number")
+  publishedAt               DateTime        @default(now()) @map("published_at")
+  publishedById             String?         @map("published_by") @db.Uuid
+  changeNote                String?         @map("change_note") @db.VarChar(300)
+  assessmentCode            String          @map("assessment_code") @db.VarChar(50)
+  assessmentName            String          @map("assessment_name") @db.VarChar(200)
+  productId                 String          @map("product_id") @db.Uuid
+  productCode               String          @map("product_code") @db.VarChar(30)
+  productName               String          @map("product_name") @db.VarChar(150)
+  selectionMode             SelectionMode   @map("selection_mode")
+  totalQuestions            Int             @map("total_questions")
+  totalMarks                Float           @map("total_marks")
+  passingPercentage         Float           @map("passing_percentage")
+  durationMinutes           Int             @map("duration_minutes")
+  startDate                 DateTime?       @map("start_date")
+  endDate                   DateTime?       @map("end_date")
+  maxAttempts               Int             @map("max_attempts")
+  reattemptPolicy           ReattemptPolicy @map("reattempt_policy")
+  reattemptSameQuestions    Boolean         @map("reattempt_same_questions")
+  randomizeQuestions        Boolean         @map("randomize_questions")
+  randomizeOptions          Boolean         @map("randomize_options")
+  allowPreviousQuestion     Boolean         @map("allow_previous_question")
+  allowQuestionNavigation   Boolean         @map("allow_question_navigation")
+  showResultImmediately     Boolean         @map("show_result_immediately")
+  showCorrectAnswers        Boolean         @map("show_correct_answers")
+  showExplanation           Boolean         @map("show_explanation")
+  negativeMarkingEnabled    Boolean         @map("negative_marking_enabled")
+  autoSubmitOnTimeout       Boolean         @map("auto_submit_on_timeout")
+  certificationEnabled      Boolean         @map("certification_enabled")
+  certificationValidityDays Int?            @map("certification_validity_days")
+
+  assessment   Assessment                      @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  questions    AssessmentVersionQuestion[]
+  rules        AssessmentVersionRule[]
+  distribution AssessmentVersionDistribution[]
+  attempts     AssessmentAttempt[]
+
+  @@unique([assessmentId, versionNumber])
+  @@map("assessment_versions")
+}
+
+model AssessmentVersionQuestion {
+  id         String            @id @default(uuid()) @db.Uuid
+  versionId  String            @map("version_id") @db.Uuid
+  questionId String            @map("question_id") @db.Uuid
+  sequence   Int
+  version    AssessmentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  question   Question          @relation(fields: [questionId], references: [id])
+
+  @@unique([versionId, questionId])
+  @@index([questionId])
+  @@map("assessment_version_questions")
+}
+
+model AssessmentVersionRule {
+  id              String            @id @default(uuid()) @db.Uuid
+  versionId       String            @map("version_id") @db.Uuid
+  topicId         String?           @map("topic_id") @db.Uuid
+  subTopicId      String?           @map("sub_topic_id") @db.Uuid
+  difficultyLevel DifficultyLevel?  @map("difficulty_level")
+  questionCount   Int               @map("question_count")
+  sequence        Int               @default(0)
+  version         AssessmentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  topic           ProductTopic?     @relation("VersionRuleTopic", fields: [topicId], references: [id])
+  subTopic        ProductTopic?     @relation("VersionRuleSubTopic", fields: [subTopicId], references: [id])
+
+  @@index([versionId])
+  @@map("assessment_version_rules")
+}
+
+model AssessmentVersionDistribution {
+  id              String            @id @default(uuid()) @db.Uuid
+  versionId       String            @map("version_id") @db.Uuid
+  difficultyLevel DifficultyLevel   @map("difficulty_level")
+  questionCount   Int               @map("question_count")
+  version         AssessmentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@unique([versionId, difficultyLevel])
+  @@map("assessment_version_distribution")
+}
+
+// Manually selected questions.
+model AssessmentQuestion {
+  id           String     @id @default(uuid()) @db.Uuid
+  assessmentId String     @map("assessment_id") @db.Uuid
+  questionId   String     @map("question_id") @db.Uuid
+  sequence     Int
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  question     Question   @relation(fields: [questionId], references: [id])
+
+  @@unique([assessmentId, questionId])
+  @@index([questionId])
+  @@map("assessment_questions")
+}
+
+// Dynamic selection rules: pick `questionCount` random questions matching the filters.
+model AssessmentQuestionRule {
+  id              String           @id @default(uuid()) @db.Uuid
+  assessmentId    String           @map("assessment_id") @db.Uuid
+  topicId         String?          @map("topic_id") @db.Uuid
+  subTopicId      String?          @map("sub_topic_id") @db.Uuid
+  difficultyLevel DifficultyLevel? @map("difficulty_level")
+  questionCount   Int              @map("question_count")
+  sequence        Int              @default(0)
+  assessment      Assessment       @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  topic           ProductTopic?    @relation("RuleTopic", fields: [topicId], references: [id])
+  subTopic        ProductTopic?    @relation("RuleSubTopic", fields: [subTopicId], references: [id])
+
+  @@index([assessmentId])
+  @@map("assessment_question_rules")
+}
+
+model AssessmentAssignment {
+  id                  String           @id @default(uuid()) @db.Uuid
+  assessmentId        String           @map("assessment_id") @db.Uuid
+  assignmentType      AssignmentType   @map("assignment_type")
+  // USER -> user id; TEAM/DEPARTMENT/LOCATION/PRODUCT_GROUP -> value; ROLE -> role code
+  assignmentReference String           @map("assignment_reference") @db.VarChar(150)
+  assignedById        String?          @map("assigned_by") @db.Uuid
+  assignedAt          DateTime         @default(now()) @map("assigned_at")
+  dueDate             DateTime?        @map("due_date")
+  status              AssignmentStatus @default(ACTIVE)
+  assessment          Assessment       @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  assignedBy          User?            @relation("AssignmentAssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
+
+  @@index([assessmentId, status])
+  @@index([assignmentType, assignmentReference])
+  @@map("assessment_assignments")
+}
+
+// ---------------------------------------------------------------------------
+// Attempts (immutable history)
+// ---------------------------------------------------------------------------
+
+model AssessmentAttempt {
+  id                  String         @id @default(uuid()) @db.Uuid
+  assessmentId        String         @map("assessment_id") @db.Uuid
+  userId              String         @map("user_id") @db.Uuid
+  attemptNumber       Int            @map("attempt_number")
+  startTime           DateTime       @default(now()) @map("start_time")
+  // Server-side deadline: startTime + duration. The single source of truth for the timer.
+  deadline            DateTime
+  submitTime          DateTime?      @map("submit_time")
+  durationUsed        Int?           @map("duration_used_seconds")
+  totalQuestions      Int            @map("total_questions")
+  attemptedQuestions  Int            @default(0) @map("attempted_questions")
+  correctAnswers      Int            @default(0) @map("correct_answers")
+  incorrectAnswers    Int            @default(0) @map("incorrect_answers")
+  unansweredQuestions Int            @default(0) @map("unanswered_questions")
+  marksObtained       Float          @default(0) @map("marks_obtained")
+  negativeMarks       Float          @default(0) @map("negative_marks")
+  totalMarks          Float          @map("total_marks")
+  percentage          Float          @default(0)
+  result              AttemptResult?
+  status              AttemptStatus  @default(STARTED)
+  // Published assessment configuration the attempt runs under (immutable).
+  assessmentVersionId String         @map("assessment_version_id") @db.Uuid
+  lastActivityAt      DateTime       @default(now()) @map("last_activity_at")
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+
+  assessment  Assessment        @relation(fields: [assessmentId], references: [id])
+  version     AssessmentVersion @relation(fields: [assessmentVersionId], references: [id])
+  user        User              @relation(fields: [userId], references: [id])
+  questions   AttemptQuestion[]
+  answers     AttemptAnswer[]
+  certificate Certificate?
+
+  @@unique([assessmentId, userId, attemptNumber])
+  @@index([userId, status])
+  @@index([assessmentId, status])
+  @@index([status, deadline])
+  @@index([submitTime])
+  @@index([assessmentVersionId])
+  @@map("assessment_attempts")
+}
+
+// Snapshot of a question exactly as it was served in an attempt.
+model AttemptQuestion {
+  id              String                  @id @default(uuid()) @db.Uuid
+  attemptId       String                  @map("attempt_id") @db.Uuid
+  questionId      String                  @map("question_id") @db.Uuid
+  questionNo      Int                     @map("question_no")
+  sequence        Int
+  questionText    String                  @map("question_text")
+  questionType    QuestionType            @map("question_type")
+  difficultyLevel DifficultyLevel         @map("difficulty_level")
+  topicId         String                  @map("topic_id") @db.Uuid
+  topicName       String                  @map("topic_name") @db.VarChar(150)
+  subTopicId      String?                 @map("sub_topic_id") @db.Uuid
+  subTopicName    String?                 @map("sub_topic_name") @db.VarChar(150)
+  marks           Float
+  negativeMarks   Float                   @map("negative_marks")
+  explanation     String?
+  attempt         AssessmentAttempt       @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  options         AttemptQuestionOption[]
+  answer          AttemptAnswer?
+
+  @@unique([attemptId, questionId])
+  @@unique([attemptId, sequence])
+  @@index([questionId])
+  @@index([topicId])
+  @@map("attempt_questions")
+}
+
+// Snapshot of one option exactly as shown in an attempt (text, correctness, display order).
+model AttemptQuestionOption {
+  id                String                   @id @default(uuid()) @db.Uuid
+  attemptQuestionId String                   @map("attempt_question_id") @db.Uuid
+  // Id of the question-bank option it was copied from (not an FK: the live option may later change or be deleted).
+  sourceOptionId    String?                  @map("source_option_id") @db.Uuid
+  optionCode        String                   @map("option_code") @db.VarChar(5)
+  optionText        String                   @map("option_text")
+  isCorrect         Boolean                  @map("is_correct")
+  displayOrder      Int                      @map("display_order")
+  attemptQuestion   AttemptQuestion          @relation(fields: [attemptQuestionId], references: [id], onDelete: Cascade)
+  selectedIn        AttemptAnswer[]
+  selections        AttemptAnswerSelection[]
+
+  @@unique([attemptQuestionId, displayOrder])
+  @@index([sourceOptionId])
+  @@map("attempt_question_options")
+}
+
+model AttemptAnswer {
+  id                String                   @id @default(uuid()) @db.Uuid
+  attemptId         String                   @map("attempt_id") @db.Uuid
+  attemptQuestionId String                   @unique @map("attempt_question_id") @db.Uuid
+  questionId        String                   @map("question_id") @db.Uuid
+  // Chosen option of the attempt snapshot (single-choice questions).
+  selectedOptionId  String?                  @map("selected_option_id") @db.Uuid
+  answerText        String?                  @map("answer_text")
+  isCorrect         Boolean?                 @map("is_correct")
+  marksAwarded      Float?                   @map("marks_awarded")
+  markedForReview   Boolean                  @default(false) @map("marked_for_review")
+  answeredAt        DateTime?                @map("answered_at")
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  attempt           AssessmentAttempt        @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  attemptQuestion   AttemptQuestion          @relation(fields: [attemptQuestionId], references: [id], onDelete: Cascade)
+  selectedOption    AttemptQuestionOption?   @relation(fields: [selectedOptionId], references: [id])
+  // Multiple chosen options (MCQ_MULTIPLE and future answer formats).
+  selections        AttemptAnswerSelection[]
+
+  @@unique([attemptId, questionId])
+  @@index([questionId])
+  @@index([selectedOptionId])
+  @@map("attempt_answers")
+}
+
+model AttemptAnswerSelection {
+  answerId String                @map("answer_id") @db.Uuid
+  optionId String                @map("option_id") @db.Uuid
+  answer   AttemptAnswer         @relation(fields: [answerId], references: [id], onDelete: Cascade)
+  option   AttemptQuestionOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@id([answerId, optionId])
+  @@index([optionId])
+  @@map("attempt_answer_selections")
+}
+
+// ---------------------------------------------------------------------------
+// Certificates, notifications, audit, settings
+// ---------------------------------------------------------------------------
+
+model Certificate {
+  id                String            @id @default(uuid()) @db.Uuid
+  certificateNumber String            @unique @map("certificate_number") @db.VarChar(50)
+  userId            String            @map("user_id") @db.Uuid
+  assessmentId      String            @map("assessment_id") @db.Uuid
+  attemptId         String            @unique @map("attempt_id") @db.Uuid
+  productId         String            @map("product_id") @db.Uuid
+  score             Float
+  percentage        Float
+  issueDate         DateTime          @default(now()) @map("issue_date")
+  expiryDate        DateTime?         @map("expiry_date")
+  status            CertificateStatus @default(ACTIVE)
+  createdAt         DateTime          @default(now()) @map("created_at")
+  user              User              @relation(fields: [userId], references: [id])
+  assessment        Assessment        @relation(fields: [assessmentId], references: [id])
+  attempt           AssessmentAttempt @relation(fields: [attemptId], references: [id])
+  product           Product           @relation(fields: [productId], references: [id])
+
+  @@index([userId])
+  @@index([productId])
+  @@index([status, expiryDate])
+  @@map("certificates")
+}
+
+model Notification {
+  id         String              @id @default(uuid()) @db.Uuid
+  userId     String              @map("user_id") @db.Uuid
+  type       NotificationType
+  channel    NotificationChannel @default(IN_APP)
+  title      String              @db.VarChar(200)
+  message    String
+  link       String?             @db.VarChar(500)
+  // The record the notification is about (e.g. Assessment / AssessmentAttempt / Certificate).
+  entityType String?             @map("entity_type") @db.VarChar(50)
+  entityId   String?             @map("entity_id") @db.VarChar(100)
+  // Prevents the same event notification from being sent twice (e.g. "due soon").
+  dedupeKey  String?             @map("dedupe_key") @db.VarChar(200)
+  isRead     Boolean             @default(false) @map("is_read")
+  readAt     DateTime?           @map("read_at")
+  createdAt  DateTime            @default(now()) @map("created_at")
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, isRead, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String           @id @default(uuid()) @db.Uuid
+  userId     String?          @map("user_id") @db.Uuid
+  action     String           @db.VarChar(100)
+  entityType String           @map("entity_type") @db.VarChar(50)
+  entityId   String?          @map("entity_id") @db.VarChar(100)
+  ipAddress  String?          @map("ip_address") @db.VarChar(64)
+  userAgent  String?          @map("user_agent") @db.VarChar(500)
+  createdAt  DateTime         @default(now()) @map("created_at")
+  user       User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  changes    AuditLogChange[]
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// One row per changed field of an audited action (dotted path, e.g. "options[1].optionText").
+model AuditLogChange {
+  id         String   @id @default(uuid()) @db.Uuid
+  auditLogId String   @map("audit_log_id") @db.Uuid
+  fieldPath  String   @map("field_path") @db.VarChar(300)
+  oldValue   String?  @map("old_value")
+  newValue   String?  @map("new_value")
+  auditLog   AuditLog @relation(fields: [auditLogId], references: [id], onDelete: Cascade)
+
+  @@index([auditLogId])
+  @@map("audit_log_changes")
+}
+
+// Scalar settings, one row per key (grouped keys use dots, e.g. "passwordPolicy.minLength").
+model ApplicationSetting {
+  key         String           @id @db.VarChar(100)
+  valueType   SettingValueType @map("value_type")
+  value       String           @db.VarChar(500)
+  description String?
+  updatedById String?          @map("updated_by") @db.Uuid
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@map("application_settings")
+}
+
+// Score bands used by knowledge-gap analysis (e.g. Strong 80-100, Moderate 60-79.99).
+model KnowledgeGapBand {
+  id            String   @id @default(uuid()) @db.Uuid
+  label         String   @unique @db.VarChar(50)
+  minPercentage Float    @map("min_percentage")
+  maxPercentage Float    @map("max_percentage")
+  color         String?  @db.VarChar(20)
+  sequence      Int      @default(0)
+  updatedById   String?  @map("updated_by") @db.Uuid
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("knowledge_gap_bands")
+}
+
+// Named counters (e.g. certificate numbers per product and year).
+model Sequence {
+  name  String @id @db.VarChar(100)
+  value Int    @default(0)
+
+  @@map("sequences")
+}
